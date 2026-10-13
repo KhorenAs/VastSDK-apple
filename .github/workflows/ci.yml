@@ -1,12 +1,14 @@
 # The SDK is four builds and one test suite. All five run here, because the ones
 # that are not run are the ones that break: the tvOS demo build was broken for a
 # day before anyone tried it, and `swift test` fails outright on a machine whose
-# xcode-select points at CommandLineTools rather than a full Xcode.
+# xcode-select points at CommandLineTools rather than a full Xcode. A release tag
+# runs them too, plus a sixth job that holds the tag to `VASTVersion.current`.
 name: CI
 
 on:
   push:
     branches: [main, dev]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -15,6 +17,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # What an ad server hears through `[CLIENTUA]` is `VASTVersion.current`, not the
+  # tag, and nothing tied the two together: 1.6.0 through 1.8.1 all went out
+  # calling themselves 1.5.0. This cannot stop a wrong tag from being pushed — it
+  # runs once the tag exists — but it stops one from passing unnoticed.
+  version:
+    name: Tag matches VASTVersion.current
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare
+        run: |
+          file=Sources/VASTCore/VASTVersion.swift
+          sdk=$(sed -n 's/^[[:space:]]*public static let current = "\([^"]*\)".*/\1/p' "$file")
+          tag="${GITHUB_REF_NAME#v}"
+          if [ -z "$sdk" ]; then
+            echo "::error file=$file::Could not read VASTVersion.current; update this step if its declaration changed shape"
+            exit 1
+          fi
+          if [ "$sdk" != "$tag" ]; then
+            echo "::error file=$file::Tag $GITHUB_REF_NAME, but VASTVersion.current is \"$sdk\""
+            exit 1
+          fi
+          echo "$GITHUB_REF_NAME and VASTVersion.current agree"
+
   tests:
     name: Tests (macOS)
     runs-on: macos-15

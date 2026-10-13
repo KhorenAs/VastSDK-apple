@@ -425,6 +425,14 @@ are published by the IAB Tech Lab rather than vendored here. They used to be —
 `vast_4.3.xsd` turned out to contain the fourteen bytes `404: Not Found`, which is
 what happens to a file no build ever reads.
 
+## Releasing
+
+Set `VASTVersion.current` in `Sources/VASTCore/VASTVersion.swift` to the new
+version first, then tag the commit that carries it as an annotated `vX.Y.Z`. The
+tag is what SwiftPM resolves; the constant is what an ad server hears through
+`[CLIENTUA]`. CI fails a tag build where the two disagree, but only once the tag
+has been pushed — the edit is what keeps a wrong version from shipping.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
