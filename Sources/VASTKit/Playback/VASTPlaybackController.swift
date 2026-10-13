@@ -330,7 +330,9 @@ final class VASTPlaybackController {
         player.replaceCurrentItem(with: item)
         guard item != nil else { return }
         player.seek(to: time) { [weak player] _ in
-            if resume { player?.play() }
+            guard resume else { return }
+            // AVPlayer does not promise a main-actor seek completion.
+            Task { @MainActor [weak player] in player?.play() }
         }
     }
     

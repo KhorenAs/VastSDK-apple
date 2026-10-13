@@ -41,7 +41,11 @@ public final class VASTPlayerClock: iVASTClock, @unchecked Sendable {
                 queue: .main
             ) { [weak self] time in
                 guard let self else { return }
-                continuation.yield(self.tick(at: time))
+                // The observer is registered on the main queue, where AVPlayer
+                // playback state is isolated on iOS and tvOS.
+                MainActor.assumeIsolated {
+                    continuation.yield(self.tick(at: time))
+                }
             }
 
             lock.lock()
@@ -66,6 +70,7 @@ public final class VASTPlayerClock: iVASTClock, @unchecked Sendable {
         continuation?.finish()
     }
 
+    @MainActor
     private func tick(at time: CMTime) -> VASTTick {
         let current = player.currentItem
         let duration = adItem.duration

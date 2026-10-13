@@ -437,6 +437,13 @@ has been pushed — the edit is what keeps a wrong version from shipping.
 
 MIT — see [LICENSE](LICENSE).
 
+## 1.8.2: release version reporting
+
+The SDK reports `1.8.2` through `VASTVersion.current` and VAST client macros.
+Release tag CI checks that the declared version matches the tag. The Swift Package URL is `https://github.com/KhorenAs/VastSDK-apple.git`.
+AVPlayer clock reads and host playback restoration run on the main actor on
+iOS and tvOS; Now Playing test cleanup also respects its actor isolation.
+
 ## 1.8.1: conditional custom ad UI
 
 With `session.isHiddenUi = true`, `UiHideable=1` (or `UiHidden=1`)

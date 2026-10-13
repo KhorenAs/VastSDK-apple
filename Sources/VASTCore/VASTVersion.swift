@@ -17,5 +17,5 @@ import Foundation
 /// 1.8.1 said 1.5.0 — so CI now fails a `vX.Y.Z` tag build when the tag and
 /// this value disagree.
 public enum VASTVersion {
-    public static let current = "1.8.1"
+    public static let current = "1.8.2"
 }

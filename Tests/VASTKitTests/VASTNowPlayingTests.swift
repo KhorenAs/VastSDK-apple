@@ -36,9 +36,11 @@ final class VASTNowPlayingTests: XCTestCase {
         )
     }
 
-    override func tearDown() {
-        infoCenter.nowPlayingInfo = nil
-        super.tearDown()
+    override func tearDown() async throws {
+        await MainActor.run {
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        }
+        try await super.tearDown()
     }
 
     // MARK: - The default
