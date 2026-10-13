@@ -40,7 +40,6 @@ final class VASTNowPlayingTests: XCTestCase {
         await MainActor.run {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         }
-        try await super.tearDown()
     }
 
     // MARK: - The default
