@@ -12,7 +12,7 @@ for it. What an older tag does not get is whatever the table below marks `❌`,
 VPAID first among them.
 
 ```swift
-.package(url: "https://github.com/KhorenAs/VastSDK.git", from: "1.0.0")
+.package(url: "https://github.com/KhorenAs/VastSDK-apple.git", from: "1.0.0")
 ```
 
 Then depend on `VASTKit` (player and ad UI) or on `VASTCore` alone — parsing,
