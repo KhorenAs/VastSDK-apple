@@ -437,6 +437,13 @@ has been pushed — the edit is what keeps a wrong version from shipping.
 
 MIT — see [LICENSE](LICENSE).
 
+## 1.8.3: Swift 6.1 test compatibility
+
+Now Playing test cleanup no longer sends its main actor-isolated test case to
+the nonisolated XCTest teardown hook. This keeps the test suite compatible with
+the Xcode 16.4 / Swift 6.1 release CI toolchain. Playback behavior is unchanged
+from 1.8.2; the SDK and client macros now report `1.8.3`.
+
 ## 1.8.2: release version reporting
 
 The SDK reports `1.8.2` through `VASTVersion.current` and VAST client macros.
