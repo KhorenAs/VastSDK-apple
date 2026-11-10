@@ -125,6 +125,177 @@ final class VASTBeaconDeliveryTests: XCTestCase {
         XCTAssertEqual(heldAfter, 0)
     }
 
+    // MARK: - The retry ration
+
+    /// Found by hand in a browser, in the web port, and the same here: with a
+    /// tracker that never answers, every new beacon sent the whole backlog again,
+    /// twice, so one ad produced dozens of requests per tracker. An ad blocker or
+    /// a DNS filter makes a tracker like that of every tracker it knows.
+    func testTheBacklogIsResentAtMostOncePerIntervalHoweverManyBeaconsFire() async {
+        FailingProtocol.reset(failing: true)
+        let transport = VASTURLSessionTransport(session: Self.stubbedSession(), maxAttempts: 2, queue: queue)
+
+        for event in ["impression", "start", "firstQuartile", "midpoint", "thirdQuartile", "complete"] {
+            await transport.fire([Self.beacon(event)])
+        }
+
+        XCTAssertEqual(
+            FailingProtocol.requested.filter { $0 == "impression" }.count, 3,
+            "its own two attempts, then one retry within the interval"
+        )
+        XCTAssertEqual(FailingProtocol.requested.count, 13, "six beacons, two attempts each, and one retry batch")
+        let held = await queue.count()
+        XCTAssertEqual(held, 6)
+    }
+
+    func testAQueuedBeaconGetsOneAttemptPerBatchWhereAFirstSendGetsTwo() async {
+        await queue.enqueue([Self.url("old")])
+        FailingProtocol.reset(failing: true)
+
+        await VASTURLSessionTransport(session: Self.stubbedSession(), maxAttempts: 2, queue: queue)
+            .fire([Self.beacon("new")])
+
+        XCTAssertEqual(FailingProtocol.requested.sorted(), ["new", "new", "old"])
+    }
+
+    /// A host builds a session per break, and the session a transport: the
+    /// ration has to be the process's, not theirs.
+    func testEveryTransportInTheProcessSharesOneRation() async {
+        await queue.enqueue([Self.url("old")])
+        FailingProtocol.reset(failing: true)
+
+        for _ in 0..<5 {
+            await VASTURLSessionTransport(session: Self.stubbedSession(), maxAttempts: 2, queue: queue)
+                .fire([Self.beacon("new")])
+        }
+
+        XCTAssertEqual(FailingProtocol.requested.filter { $0 == "old" }.count, 1)
+    }
+
+    func testARetryWaitsForTheIntervalToPass() async {
+        let clock = TestClock()
+        let rationed = VASTBeaconQueue(fileName: "vast-test-\(UUID().uuidString).json", now: clock.now)
+        await rationed.enqueue([Self.url("impression")])
+        FailingProtocol.reset(failing: true)
+        let transport = VASTURLSessionTransport(session: Self.stubbedSession(), maxAttempts: 2, queue: rationed)
+
+        await transport.fire([Self.beacon("a")])
+        await transport.fire([Self.beacon("b")])
+        XCTAssertEqual(FailingProtocol.requested.filter { $0 == "impression" }.count, 1, "once per interval")
+
+        clock.advance(VASTBeaconQueue.retryInterval)
+        await transport.fire([Self.beacon("c")])
+        XCTAssertEqual(FailingProtocol.requested.filter { $0 == "impression" }.count, 2)
+        await rationed.removeAll()
+    }
+
+    /// The ration is measured on the wall clock, which can be set back; that must
+    /// not stop retries until it catches up.
+    func testAClockSetBackDoesNotHoldRetriesBack() async {
+        let clock = TestClock()
+        let rationed = VASTBeaconQueue(fileName: "vast-test-\(UUID().uuidString).json", now: clock.now)
+        await rationed.enqueue([Self.url("impression")])
+        FailingProtocol.reset(failing: true)
+        let transport = VASTURLSessionTransport(session: Self.stubbedSession(), maxAttempts: 2, queue: rationed)
+
+        await transport.fire([Self.beacon("a")])
+        clock.advance(-60 * 60)
+        await transport.fire([Self.beacon("b")])
+
+        XCTAssertEqual(FailingProtocol.requested.filter { $0 == "impression" }.count, 2)
+        await rationed.removeAll()
+    }
+
+    func testARetryBatchIsCappedOldestFirstAndTheRestStaysQueued() async {
+        let clock = TestClock()
+        let rationed = VASTBeaconQueue(fileName: "vast-test-\(UUID().uuidString).json", now: clock.now)
+        for index in 0..<(VASTBeaconQueue.retryBatch + 10) {
+            await rationed.enqueue([Self.url("b\(index)")])
+            clock.advance(0.001)
+        }
+        FailingProtocol.reset(failing: false)
+
+        await VASTURLSessionTransport(session: Self.stubbedSession(), maxAttempts: 1, queue: rationed)
+            .fire([Self.beacon("new")])
+
+        let retried = Set(FailingProtocol.requested).subtracting(["new"])
+        XCTAssertEqual(retried, Set((0..<VASTBeaconQueue.retryBatch).map { "b\($0)" }))
+        let held = await rationed.count()
+        XCTAssertEqual(held, 10)
+        await rationed.removeAll()
+    }
+
+    func testABeaconIsLetGoAfterMaxRetriesFailedBatchesWellBeforeItWouldAgeOut() async {
+        let clock = TestClock()
+        let rationed = VASTBeaconQueue(fileName: "vast-test-\(UUID().uuidString).json", now: clock.now)
+        await rationed.enqueue([Self.url("blocked")])
+        FailingProtocol.reset(failing: false)
+        let transport = VASTURLSessionTransport(session: Self.stubbedSession(), maxAttempts: 2, queue: rationed)
+
+        for _ in 0..<(VASTBeaconQueue.maxRetries + 2) {
+            // Everything fails but the beacon that carries the retry, which lands.
+            FailingProtocol.reset(failing: true, except: ["carrier"])
+            await transport.fire([Self.beacon("carrier")])
+            FailingProtocol.tally()
+            clock.advance(VASTBeaconQueue.retryInterval)
+        }
+
+        XCTAssertEqual(FailingProtocol.total(of: "blocked"), VASTBeaconQueue.maxRetries)
+        let held = await rationed.count()
+        XCTAssertEqual(held, 0)
+        await rationed.removeAll()
+    }
+
+    /// A file written before retries were counted has no `retries` key; it has to
+    /// read the same, and a beacon that has only failed its first send is still
+    /// stored that way.
+    func testARetryCountIsStoredOnlyOnceABeaconHasFailedARetryAndOldFilesStillRead() async throws {
+        let name = "vast-test-\(UUID().uuidString).json"
+        let file = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+            .appendingPathComponent(name)
+        let clock = TestClock()
+        let recorded = clock.date.timeIntervalSinceReferenceDate
+        let old = #"[{"url":"https:\/\/ads.test\/a","recorded":\#(recorded)}]"#
+        try Data(old.utf8).write(to: file)
+
+        let queue = VASTBeaconQueue(fileName: name, now: clock.now)
+        let taken = await queue.takeForRetry()
+        XCTAssertEqual(taken, [VASTBeaconQueue.Entry(url: Self.url("a"), recorded: clock.date, retries: nil)])
+
+        await queue.requeue(taken.map { $0.failedAgain() })
+        await queue.enqueue([Self.url("b")])
+        let stored = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [[String: Any]]
+        await queue.removeAll()
+
+        XCTAssertEqual(stored?.count, 2)
+        XCTAssertEqual(stored?.first?["retries"] as? Int, 1)
+        XCTAssertNil(stored?.last?["retries"], "a first failure is stored as it always was")
+    }
+
+    /// A retry that failed again used to be queued as new, so a beacon to a
+    /// tracker that never answers was never older than its latest failure: it
+    /// stayed for as long as the app kept sending beacons, with whatever consent
+    /// string its URL carried.
+    func testABeaconThatKeepsFailingAgesOutFromWhenItWasFirstRecorded() async {
+        let clock = TestClock()
+        let aging = VASTBeaconQueue(fileName: "vast-test-\(UUID().uuidString).json", now: clock.now)
+        FailingProtocol.reset(failing: true)
+        let transport = VASTURLSessionTransport(session: Self.stubbedSession(), maxAttempts: 1, queue: aging)
+
+        await transport.fire([Self.beacon("blocked")])
+        clock.advance(VASTBeaconQueue.maxAge - 60)
+        await transport.fire([Self.beacon("start")])
+        clock.advance(120)
+
+        XCTAssertEqual(FailingProtocol.requested.filter { $0 == "blocked" }.count, 2, "the failure was not retried at all")
+        let drained = await aging.drain()
+        await aging.removeAll()
+        XCTAssertEqual(
+            drained.map(\.lastPathComponent), ["start"],
+            "a URL that may carry a consent string outlived maxAge"
+        )
+    }
+
     /// A host that has its own counting can opt out; the default must not be that.
     func testRetentionIsOnByDefault() {
         let transport = VASTURLSessionTransport()
@@ -148,6 +319,24 @@ final class VASTBeaconDeliveryTests: XCTestCase {
     }
 }
 
+// MARK: - Time on demand
+
+/// A wall clock the test moves, so "six hours later" is a line rather than a wait.
+private final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current = Date(timeIntervalSinceReferenceDate: 800_000_000)
+
+    var now: @Sendable () -> Date {
+        { [self] in lock.withLock { current } }
+    }
+
+    func advance(_ seconds: TimeInterval) {
+        lock.withLock { current += seconds }
+    }
+
+    var date: Date { lock.withLock { current } }
+}
+
 // MARK: - A network that fails on demand
 
 /// Answers every request without touching a network, so "the beacon failed" is a
@@ -156,13 +345,31 @@ private final class FailingProtocol: URLProtocol {
 
     private static let lock = NSLock()
     nonisolated(unsafe) private static var shouldFail = false
+    nonisolated(unsafe) private static var answering: Set<String> = []
     nonisolated(unsafe) private static var seen: [String] = []
+    nonisolated(unsafe) private static var tallied: [String] = []
 
-    static func reset(failing: Bool) {
+    /// - Parameter except: paths that answer even while everything else fails.
+    static func reset(failing: Bool, except: Set<String> = []) {
         lock.lock()
         shouldFail = failing
+        answering = except
         seen = []
         lock.unlock()
+    }
+
+    /// Adds what was requested since the last reset to a count that survives resets.
+    static func tally() {
+        lock.lock()
+        tallied += seen
+        lock.unlock()
+    }
+
+    /// Requests for `path` across every tally, then starts the count again.
+    static func total(of path: String) -> Int {
+        lock.lock()
+        defer { tallied = []; lock.unlock() }
+        return tallied.filter { $0 == path }.count
     }
 
     static var requested: [String] {
@@ -176,8 +383,9 @@ private final class FailingProtocol: URLProtocol {
 
     override func startLoading() {
         Self.lock.lock()
-        if let path = request.url?.lastPathComponent { Self.seen.append(path) }
-        let failing = Self.shouldFail
+        let path = request.url?.lastPathComponent ?? ""
+        Self.seen.append(path)
+        let failing = Self.shouldFail && !Self.answering.contains(path)
         Self.lock.unlock()
 
         if failing {

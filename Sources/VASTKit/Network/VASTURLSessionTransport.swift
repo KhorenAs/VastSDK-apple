@@ -21,7 +21,10 @@ import UIKit
 ///
 /// **Undelivered beacons are queued.** Anything that fails every attempt goes to
 /// `VASTBeaconQueue`, which persists it and hands it back on a later flush,
-/// including after the app has been relaunched.
+/// including after the app has been relaunched — rationed, so a tracker that
+/// never answers costs one request per beacon every
+/// `VASTBeaconQueue.retryInterval` at most, not the whole backlog again with
+/// every new beacon.
 ///
 /// **A flush holds a background task.** Requests in flight when the app leaves
 /// the foreground used to be cancelled outright, which is where beacons were lost
@@ -73,36 +76,58 @@ public struct VASTURLSessionTransport: iVASTBeaconTransport {
         guard !beacons.isEmpty else { return }
         await holdingBackgroundTask {
             // Earlier failures ride along with current traffic, so a retry costs
-            // no timer of its own and happens when the network is known to work.
-            let retries = await queue?.drain() ?? []
-            await deliver(retries + beacons.map(\.url))
+            // no timer of its own and happens when the network is known to work
+            // — as much as the queue's ration allows, which is one batch per
+            // interval for the whole process, not the whole backlog with every
+            // beacon.
+            let retries = await queue?.takeForRetry() ?? []
+            await deliver(
+                retries.map { Outgoing(url: $0.url, queued: $0) }
+                    + beacons.map { Outgoing(url: $0.url, queued: nil) }
+            )
         }
     }
 
-    private func deliver(_ urls: [URL]) async {
-        let undelivered = await withTaskGroup(of: URL?.self) { group in
-            for url in urls {
-                group.addTask { await send(url) ? nil : url }
+    /// One request to make: `queued` is the entry a retry was taken as, and
+    /// `nil` on a first send.
+    private struct Outgoing: Sendable {
+        let url: URL
+        let queued: VASTBeaconQueue.Entry?
+    }
+
+    /// What fails goes back to the queue: a first send as new, a retry as the
+    /// entry it was taken as, with one more retry counted — so a beacon that
+    /// keeps failing still ages out from when it was first recorded, not from
+    /// its latest failure, and is let go after `VASTBeaconQueue.maxRetries`.
+    private func deliver(_ outgoing: [Outgoing]) async {
+        let undelivered = await withTaskGroup(of: Outgoing?.self) { group in
+            for beacon in outgoing {
+                // A first send gets its immediate retry; a queued one has had that
+                // already, and one attempt per batch is what keeps a dead
+                // tracker's backlog from doubling every flush.
+                let attempts = beacon.queued == nil ? maxAttempts : 1
+                group.addTask { await send(beacon.url, attempts: attempts) ? nil : beacon }
             }
-            var failed: [URL] = []
-            for await url in group {
-                if let url { failed.append(url) }
+            var failed: [Outgoing] = []
+            for await beacon in group {
+                if let beacon { failed.append(beacon) }
             }
             return failed
         }
 
-        guard !undelivered.isEmpty else { return }
+        guard !undelivered.isEmpty, let queue else { return }
         Self.log.warning("\(undelivered.count, privacy: .public) beacon(s) undelivered")
-        await queue?.enqueue(undelivered)
+        await queue.enqueue(undelivered.filter { $0.queued == nil }.map(\.url))
+        await queue.requeue(undelivered.compactMap { $0.queued?.failedAgain() })
     }
 
     /// - Returns: whether the beacon landed.
-    private func send(_ url: URL) async -> Bool {
+    private func send(_ url: URL, attempts: Int) async -> Bool {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.cachePolicy = .reloadIgnoringLocalCacheData
 
-        for _ in 0..<maxAttempts {
+        for _ in 0..<attempts {
             do {
                 let (_, response) = try await session.data(for: request)
                 // A 4xx or 5xx is the server's answer, not a delivery failure:

@@ -5,7 +5,7 @@ blocks the road rather than by how hard it is. Every item names where it lives,
 and the ones already closed are struck through with the commit that closed them —
 a list that only grows is a list nobody reads twice.
 
-State: `swift test` passes 279 tests with no warnings, and CI builds `VASTKit`
+State: `swift test` passes 294 tests with no warnings, and CI builds `VASTKit`
 for iOS, tvOS and macOS plus all three demos on every platform they claim.
 
 ## Blockers
@@ -14,7 +14,9 @@ for iOS, tvOS and macOS plus all three demos on every platform they claim.
 operation metrics, the stall watchdog knows a paused ad is not a dead one, and
 `.paused` finally means something. `resumeIfNeeded()` used to undo a host's pause
 within one tick, because it could not tell that apart from the system stopping
-playback after backgrounding.
+playback after backgrounding. A pause also ends with its creative now: an ad
+skipped while paused handed its pause to the next one, which then never restarted
+after the app came back.
 
 **2. ~~Host-reportable tracking was unreachable.~~** `report(_:)` is public, so
 `mute`, `fullscreen`, `close` and the rest can be sent; and `loaded` fires from
@@ -23,7 +25,11 @@ playback after backgrounding.
 **3. ~~Beacon delivery was unreliable.~~** `VASTBeaconQueue` persists what fails
 and retries it on a later flush, including after a relaunch; a flush holds a
 background task, which is where beacons went missing most — the end of a break is
-when a viewer puts the phone down. A 5xx is retried and a 4xx is not.
+when a viewer puts the phone down. A 5xx is retried and a 4xx is not. Retries are
+rationed — one batch of at most 50 every 30 seconds per process, five tries per
+beacon — and a retry keeps the time it was first recorded, so it still ages out.
+Before that, a tracker that never answers, which is what an ad blocker makes of
+every tracker it knows, had the whole backlog sent again with every new beacon.
 
 **4. ~~No privacy manifest.~~** `PrivacyInfo.xcprivacy` states what the SDK does
 with data — nothing of its own — and names the line to watch: the moment an
@@ -81,7 +87,8 @@ is what the readiness wait was spending.
 of the running time rather than a tick: at 0.97 a thirty-second ad stopped with
 nearly a second unplayed, usually where the logo is. A 0.25s margin bounds the
 loss whatever the duration, and a stall past the watched threshold now completes
-rather than reporting 402 for the last few frames.
+rather than reporting 402 for the last few frames — to the host as well as to the
+ad server. A stall short of it ends as the 402 it reported, not as 405.
 
 **14. ~~No CI.~~** Five jobs, which is how long the tvOS demo build stayed broken:
 nothing built it.

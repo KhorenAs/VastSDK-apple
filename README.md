@@ -247,7 +247,7 @@ watched in half the time and every quartile still fires.
 | `<CustomClick>`, kept apart from `<ClickTracking>` | ✅ |
 | `<ViewableImpression>` | ✅ parsed — and `<ViewUndetermined>` is what this player can honestly send |
 | `<Icon>` (AdChoices) | ✅ parsed into `ad.icons` — ❌ not drawn; see below |
-| Undelivered beacons kept and retried, across launches | ✅ |
+| Undelivered beacons kept and retried, across launches — rationed, so a tracker that never answers cannot flood the app | ✅ |
 | The host's own transport controls held linear for the break, and given back | ✅ |
 | Picture in Picture policy for an AVKit host | ✅ `.suspended` refuses a start — the rest needs your own `AVPlayerLayer` |
 | Skip control and countdown localised (`en`, `hy`) | ✅ |

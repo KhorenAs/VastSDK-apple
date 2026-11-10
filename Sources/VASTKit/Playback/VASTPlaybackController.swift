@@ -116,6 +116,11 @@ final class VASTPlaybackController {
         guard !isAborted else { throw VASTError.mediaFileTimeout }
         snapshotHostIfNeeded()
         wantsPlayback = true
+        // A pause belongs to the creative it was made on. This one is about to be
+        // asked to play, so a pause left over from the one before — skipped while
+        // paused, say — would only leave `resumeIfNeeded()` refusing to restart it
+        // after the app comes back, frozen while the session says `.playing`.
+        isPausedByUser = false
 
         // The warmed asset if there is one, and taken rather than copied: a pod
         // does not play the same creative twice, and holding every asset for the

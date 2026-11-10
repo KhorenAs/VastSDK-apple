@@ -229,6 +229,9 @@ extension VASTAdSession {
         /// abandoned instead of hanging the break.
         var lastAdvance = ProcessInfo.processInfo.systemUptime
         var lastPosition: TimeInterval = -1
+        /// Why the creative ended, when the session decided it rather than the
+        /// engine — a stall.
+        var failure: VASTError?
 
         for await tick in clock.ticks() {
             guard var current = activeEngine else { break }
@@ -259,10 +262,21 @@ extension VASTAdSession {
                 lastAdvance = tick.wallClock
             } else if playback.wantsPlayback,
                       tick.wallClock - lastAdvance > Self.stallTimeout {
+                // A creative already watched through counts as complete — the
+                // engine says so — and anything else is a 402: the host hears it
+                // whether or not the response gave an `<Error>` URI to tell, and
+                // it is the outcome. The engine finishes the creative by failing
+                // it, so without `failure` the outcome fell through to 405, for an
+                // ad everyone had been told was a 402.
+                let watchedThrough = current.duration > 0
+                    && current.watched >= current.duration * VASTTrackingEngine.completionThreshold
                 send(current.playbackDidStall())
                 activeEngine = current
                 engine = current
-                delegate?.session(self, didFail: .mediaFileTimeout, for: ad)
+                if !watchedThrough {
+                    failure = .mediaFileTimeout
+                    delegate?.session(self, didFail: .mediaFileTimeout, for: ad)
+                }
                 break
             }
 
@@ -270,7 +284,7 @@ extension VASTAdSession {
         }
         clock.stop()
 
-        let outcome: Outcome = outcomeFor(engine)
+        let outcome: Outcome = outcomeFor(engine, failure: failure)
         skipRequested = false
         // Exactly once per `begin`, whatever the outcome: a measurement session
         // left open counts against the vendor, not against us.
@@ -283,10 +297,12 @@ extension VASTAdSession {
     /// playing, before the creative is written off as unplayable (402).
     static let stallTimeout: TimeInterval = 10
 
-    /// A skip beats everything; otherwise the creative counts as completed only
-    /// if the engine actually finished it, not merely because something played.
-    private func outcomeFor(_ engine: VASTTrackingEngine) -> Outcome {
+    /// A skip beats everything, then a failure the session decided; otherwise
+    /// the creative counts as completed only if the engine actually finished
+    /// it, not merely because something played.
+    private func outcomeFor(_ engine: VASTTrackingEngine, failure: VASTError?) -> Outcome {
         if skipRequested { return .skipped }
+        if let failure { return .failed(failure) }
         guard engine.isFinished else { return .failed(.mediaFileTimeout) }
         return engine.watched >= engine.duration * VASTTrackingEngine.completionThreshold
             ? .completed
