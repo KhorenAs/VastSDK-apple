@@ -437,6 +437,28 @@ has been pushed — the edit is what keeps a wrong version from shipping.
 
 MIT — see [LICENSE](LICENSE).
 
+## 1.8.4: stalls, pauses and beacon retries
+
+The defects the web and Android ports found are fixed here too.
+
+- A stall short of the end now finishes as `.failed(.mediaFileTimeout)`, the 402
+  it reported, rather than 405.
+- A stall after the creative was watched through no longer tells the delegate it
+  failed.
+- An ad skipped while paused no longer leaves the next one frozen after the app
+  returns to the foreground.
+- Beacon retries are rationed:
+  - one batch of at most 50 every 30 seconds per process;
+  - one attempt per queued beacon;
+  - a beacon is dropped after five failed batches.
+
+  A failed retry keeps the time it was first recorded, so it still ages out
+  after six hours. Before this, a tracker that never answers — which is what an
+  ad blocker or a DNS filter makes of every tracker it knows — had the whole
+  backlog sent again with every new beacon.
+
+The SDK and client macros report `1.8.4`.
+
 ## 1.8.3: Swift 6.1 test compatibility
 
 Now Playing test cleanup no longer sends its main actor-isolated test case to
